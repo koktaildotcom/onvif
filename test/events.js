@@ -97,11 +97,14 @@ describe('Events', () => {
 			serverMockup.connectionBreaker.break = false;
 			cam.pullMessages = pullMessages;
 			assert.ok(gotMessage === 11 || gotMessage === 12);
-			assert.ok(pullMessagesCallCount > gotMessage && pullMessagesCallCount > 20);
+			// It keeps trying after the connection failed, on the increasing interval, so the retries
+			// stay well below the number of authentications that makes some devices lock the account.
+			assert.ok(pullMessagesCallCount > gotMessage);
+			assert.ok(pullMessagesCallCount < 20);
 			cam.removeListener('event', onEvent);
 			cam.unsubscribe(done);
-		}, 1.5 * 1000);
-	});
+		}, 4 * 1000);
+	}).timeout(6000);
 	it('should return an error when calling renew without subscription', (done) => {
 		cam.renew({}, (err) => {
 			assert.ok(err instanceof Error);
