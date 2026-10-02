@@ -43,7 +43,73 @@ function stop(cam) {
 	delete cam.events.terminationTime;
 }
 
+/**
+ * An event loop on a device that turns the first requests for a pull point down with a fault and
+ * accepts the one after those.
+ */
+function buildRejectingLoop(rejections) {
+	const cam = new EventEmitter();
+	const state = { attempts: 0, pulls: 0, errors: 0 };
+
+	cam.events = {};
+	cam.createPullPointSubscription = (callback) => {
+		state.attempts++;
+		if (state.attempts <= rejections) {
+			setImmediate(() => callback.call(cam, new Error('ONVIF SOAP Fault: Sender')));
+			return;
+		}
+		cam.events.subscription = { subscriptionId: String(state.attempts) };
+		cam.events.terminationTime = Date.now() + 60000;
+		setImmediate(() => callback.call(cam, null));
+	};
+	cam.pullMessages = () => {
+		state.pulls++;
+	};
+	cam.unsubscribe = () => {};
+	cam._eventPull = onvif.Cam.prototype._eventPull;
+	cam._eventRequest = onvif.Cam.prototype._eventRequest;
+	cam._restartEventRequest = onvif.Cam.prototype._restartEventRequest;
+
+	cam.on('event', () => {});
+	cam.on('eventsError', () => {
+		state.errors++;
+	});
+
+	return { cam, state };
+}
+
 describe('Events resubscribe interval', () => {
+	it('asks again for a pull point the device turned down with a fault', (done) => {
+		const { cam, state } = buildRejectingLoop(1);
+		cam._eventRequest();
+
+		setTimeout(() => {
+			assert.strictEqual(state.attempts, 1, 'the pull point was asked for again without waiting');
+			assert.strictEqual(state.errors, 1, 'the fault was not reported');
+			setTimeout(() => {
+				assert.strictEqual(state.attempts, 2, 'the pull point was never asked for again');
+				assert.strictEqual(state.pulls, 1, 'the loop did not pull from the accepted pull point');
+				assert.strictEqual(cam._eventReconnectms, undefined, 'the interval was kept after a success');
+				stop(cam);
+				done();
+			}, 1300);
+		}, 200);
+	}).timeout(5000);
+
+	it('widens the interval while the device keeps turning the pull point down', (done) => {
+		const { cam, state } = buildRejectingLoop(Infinity);
+		cam._eventRequest();
+
+		setTimeout(() => {
+			assert.ok(state.attempts >= 2, `the device was asked ${state.attempts} times`);
+			assert.ok(state.attempts <= 3, `the device was asked ${state.attempts} times in 2.5 seconds`);
+			assert.ok(cam._eventReconnectms > 1000, `interval stayed at ${cam._eventReconnectms}`);
+			assert.strictEqual(state.pulls, 0, 'the loop pulled without a pull point');
+			stop(cam);
+			done();
+		}, 2500);
+	}).timeout(6000);
+
 	it('waits before it asks the device for a new pull point', (done) => {
 		const { cam, state } = buildFailingLoop();
 		cam._eventPull();
