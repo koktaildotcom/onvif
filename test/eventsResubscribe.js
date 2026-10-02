@@ -47,7 +47,7 @@ function stop(cam) {
  * An event loop on a device that turns the first requests for a pull point down with a fault and
  * accepts the one after those.
  */
-function buildRejectingLoop(rejections) {
+function buildRejectingLoop(rejections, message = 'ONVIF SOAP Fault: Sender') {
 	const cam = new EventEmitter();
 	const state = { attempts: 0, pulls: 0, errors: 0 };
 
@@ -55,7 +55,7 @@ function buildRejectingLoop(rejections) {
 	cam.createPullPointSubscription = (callback) => {
 		state.attempts++;
 		if (state.attempts <= rejections) {
-			setImmediate(() => callback.call(cam, new Error('ONVIF SOAP Fault: Sender')));
+			setImmediate(() => callback.call(cam, new Error(message)));
 			return;
 		}
 		cam.events.subscription = { subscriptionId: String(state.attempts) };
@@ -109,6 +109,25 @@ describe('Events resubscribe interval', () => {
 			done();
 		}, 2500);
 	}).timeout(6000);
+
+	[
+		'Digest authentication failed 401',
+		'ONVIF SOAP Fault: {"value":"env:Sender","subcode":{"value":"ter:NotAuthorized"}}',
+		'ONVIF SOAP Fault: Sender not Authorized'
+	].forEach((message) => {
+		it(`leaves a device alone that turned the credentials down with "${message}"`, (done) => {
+			const { cam, state } = buildRejectingLoop(1, message);
+			cam._eventRequest();
+
+			setTimeout(() => {
+				assert.strictEqual(state.attempts, 1, `the device was asked ${state.attempts} times`);
+				assert.strictEqual(state.errors, 1, 'the failure was not reported');
+				assert.strictEqual(state.pulls, 0, 'the loop pulled without a pull point');
+				stop(cam);
+				done();
+			}, 1500);
+		}).timeout(5000);
+	});
 
 	it('waits before it asks the device for a new pull point', (done) => {
 		const { cam, state } = buildFailingLoop();
